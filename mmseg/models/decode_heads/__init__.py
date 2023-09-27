@@ -35,6 +35,10 @@ from .stdc_head import STDCHead
 from .uper_head import UPerHead
 from .vpd_depth_head import VPDDepthHead
 
+from .spatial_partition_decode_head import BaseSpatialPartitionDecodeHead
+from .sp_fcn_head import SPFCNHead
+from .sp_uper_head import SPUPerHead
+
 __all__ = [
     'FCNHead', 'PSPHead', 'ASPPHead', 'PSAHead', 'NLHead', 'GCHead', 'CCHead',
     'UPerHead', 'DepthwiseSeparableASPPHead', 'ANNHead', 'DAHead', 'OCRHead',
@@ -43,5 +47,6 @@ __all__ = [
     'SETRMLAHead', 'DPTHead', 'SETRMLAHead', 'SegmenterMaskTransformerHead',
     'SegformerHead', 'ISAHead', 'STDCHead', 'IterativeDecodeHead',
     'KernelUpdateHead', 'KernelUpdator', 'MaskFormerHead', 'Mask2FormerHead',
-    'LightHamHead', 'PIDHead', 'DDRHead', 'VPDDepthHead'
+    'LightHamHead', 'PIDHead', 'DDRHead', 'VPDDepthHead',
+    'BaseSpatialPartitionDecodeHead', 'SPFCNHead', 'SPUPerHead'
 ]

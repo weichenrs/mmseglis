@@ -160,7 +160,7 @@ train_pipeline = [
     dict(type='PhotoMetricDistortion'),
     dict(type='PackSegInputs')
 ]
-train_dataloader = dict(batch_size=2, dataset=dict(pipeline=train_pipeline))
+train_dataloader = dict(batch_size=1, dataset=dict(pipeline=train_pipeline))
 
 # set all layers in backbone to lr_mult=0.1
 # set all norm layers, position_embeding,
