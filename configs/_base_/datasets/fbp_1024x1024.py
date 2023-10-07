@@ -2,6 +2,7 @@
 # _base_ = './fbp.py'
 dataset_type = 'FBPDataset'
 data_root = '../../data/Five-Billion-Pixels/fbp_2048'
+data_test_root = '../../data/Five-Billion-Pixels/ori'
 crop_size = (1024, 1024)
 train_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -59,7 +60,7 @@ val_dataloader = dict(
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type=dataset_type,
-        data_root=data_root,
+        data_root=data_test_root,
         data_prefix=dict(
             img_path='Image_RGB/val', 
             seg_map_path='Annotation__index/val'),
@@ -71,7 +72,7 @@ test_dataloader = dict(
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type=dataset_type,
-        data_root=data_root,
+        data_root=data_test_root,
         data_prefix=dict(
             img_path='Image_RGB/test', 
             seg_map_path='Annotation__index/test'),

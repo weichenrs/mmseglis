@@ -145,7 +145,7 @@ model = dict(
             sampler=dict(type='mmdet.MaskPseudoSampler'))),
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
-
+    # test_cfg=dict(mode='slide', crop_size=(512, 512), stride=(384, 384)))
 # dataset config
 train_pipeline = [
     dict(type='LoadImageFromFile'),
