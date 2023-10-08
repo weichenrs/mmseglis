@@ -1,9 +1,9 @@
 _base_ = [
     '../_base_/models/sp_upernet_vit-b16_ln_mln.py',
-    '../_base_/datasets/ade20k_sp.py', '../_base_/default_runtime.py',
+    '../_base_/datasets/fbp_1024x1024_sp.py', '../_base_/default_runtime.py',
     '../_base_/schedules/sp_schedule_80k.py'
 ]
-crop_size = (512, 512)
+crop_size = (1024, 1024)
 
 data_preprocessor = dict(
     type='SPSegDataPreProcessor',

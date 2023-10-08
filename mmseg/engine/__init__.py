@@ -5,8 +5,14 @@ from .optimizers import (ForceDefaultOptimWrapperConstructor,
                          LearningRateDecayOptimizerConstructor)
 from .schedulers import PolyLRRatio
 
+from .runners import SPIterBasedTrainLoop, SPTestLoop, SPValLoop
+from .datasets import SPDefaultSampler, SPInfiniteSampler
+
 __all__ = [
     'LearningRateDecayOptimizerConstructor', 'LayerDecayOptimizerConstructor',
     'SegVisualizationHook', 'PolyLRRatio',
-    'ForceDefaultOptimWrapperConstructor'
+    'ForceDefaultOptimWrapperConstructor',
+    
+    'SPIterBasedTrainLoop', 'SPTestLoop', 'SPValLoop',
+    'SPDefaultSampler', 'SPInfiniteSampler'
 ]
