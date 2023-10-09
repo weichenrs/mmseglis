@@ -306,9 +306,9 @@ class BaseSpatialPartitionDecodeHead(BaseModule, metaclass=ABCMeta):
 
         seg_label = self._stack_batch_gt(batch_data_samples)
         
-        seg_label = seg_label.contiguous()
-        torch.distributed.broadcast(seg_label, src=0)
-        seg_label = torch.chunk(seg_label, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
+        # seg_label = seg_label.contiguous()
+        # torch.distributed.broadcast(seg_label, src=0)
+        # seg_label = torch.chunk(seg_label, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
         
         loss = dict()
         seg_logits = resize(

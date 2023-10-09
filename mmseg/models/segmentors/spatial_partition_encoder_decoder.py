@@ -173,9 +173,9 @@ class SpatialPartitionEncoderDecoder(BaseSegmentor):
         Returns:
             dict[str, Tensor]: a dictionary of loss components
         """
-        # inputs = inputs.contiguous()
-        torch.distributed.broadcast(inputs, src=0)
-        inputs = torch.chunk(inputs, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
+        # # inputs = inputs.contiguous()
+        # torch.distributed.broadcast(inputs, src=0)
+        # inputs = torch.chunk(inputs, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
         
         x = self.extract_feat(inputs)
 
@@ -264,6 +264,10 @@ class SpatialPartitionEncoderDecoder(BaseSegmentor):
             Tensor: The segmentation results, seg_logits from model of each
                 input image.
         """
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()
 
         h_stride, w_stride = self.test_cfg.stride
         h_crop, w_crop = self.test_cfg.crop_size
