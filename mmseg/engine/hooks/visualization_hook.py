@@ -12,6 +12,7 @@ from mmseg.registry import HOOKS
 from mmseg.structures import SegDataSample
 from mmseg.visualization import SegLocalVisualizer
 
+import numpy as np
 
 @HOOKS.register_module()
 class SegVisualizationHook(Hook):
@@ -82,11 +83,15 @@ class SegVisualizationHook(Hook):
             return
 
         if self.every_n_inner_iters(batch_idx, self.interval):
-            for output in outputs:
+            # for output in outputs:
+            for ind in range(len(outputs)):
+                output = outputs[ind]
+                img = np.array(data_batch['inputs'][ind]).transpose(1,2,0)
                 img_path = output.img_path
-                img_bytes = fileio.get(
-                    img_path, backend_args=self.backend_args)
-                img = mmcv.imfrombytes(img_bytes, channel_order='rgb')
+                
+                # img_bytes = fileio.get(
+                #     img_path, backend_args=self.backend_args)
+                # img = mmcv.imfrombytes(img_bytes, channel_order='rgb')               
                 window_name = f'{mode}_{osp.basename(img_path)}'
 
                 self._visualizer.add_datasample(

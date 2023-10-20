@@ -12,7 +12,7 @@ from .class_names import (ade_classes, ade_palette, bdd100k_classes,
 # yapf: enable
 from .collect_env import collect_env
 from .io import datafrombytes
-from .misc import add_prefix, stack_batch
+from .misc import add_prefix, stack_batch, sp_stack_batch
 from .set_env import register_all_modules
 from .typing_utils import (ConfigType, ForwardResults, MultiConfig,
                            OptConfigType, OptMultiConfig, OptSampleList,
@@ -29,5 +29,6 @@ __all__ = [
     'loveda_palette', 'potsdam_palette', 'vaihingen_palette', 'isaid_palette',
     'stare_palette', 'dataset_aliases', 'get_classes', 'get_palette',
     'datafrombytes', 'synapse_palette', 'synapse_classes', 'bdd100k_classes',
-    'bdd100k_palette'
+    'bdd100k_palette',
+    'sp_stack_batch'
 ]

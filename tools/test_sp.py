@@ -1,37 +1,35 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
-import logging
 import os
 import os.path as osp
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-# os.environ['RANK'] = '0'
-# os.environ['LOCAL_RANK'] = '0'
-# os.environ['WORLD_SIZE'] = '1'
-# os.environ['MASTER_ADDR'] = '127.0.0.1'
-# os.environ['MASTER_PORT'] = '12325'
-
 from mmengine.config import Config, DictAction
-from mmengine.logging import print_log
 from mmengine.runner import Runner
-
-from mmseg.registry import RUNNERS
 import colossalai
 
+# TODO: support fuse_conv_bn, visualization, and format_only
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train a segmentor')
+    parser = argparse.ArgumentParser(
+        description='MMSeg test (and eval) a model')
     parser.add_argument('config', help='train config file path')
-    parser.add_argument('--work-dir', help='the dir to save logs and models')
+    parser.add_argument('checkpoint', help='checkpoint file')
     parser.add_argument(
-        '--resume',
-        action='store_true',
-        default=False,
-        help='resume from the latest checkpoint in the work_dir automatically')
+        '--work-dir',
+        help=('if specified, the evaluation metric results will be dumped'
+              'into the directory as json'))
     parser.add_argument(
-        '--amp',
-        action='store_true',
-        default=False,
-        help='enable automatic-mixed-precision training')
+        '--out',
+        type=str,
+        help='The directory to save output prediction for offline evaluation')
+    parser.add_argument(
+        '--show', action='store_true', help='show prediction results')
+    parser.add_argument(
+        '--show-dir',
+        help='directory where painted images will be saved. '
+        'If specified, it will be automatically saved '
+        'to the work_dir/timestamp/show_dir')
+    parser.add_argument(
+        '--wait-time', type=float, default=2, help='the interval of show (s)')
     parser.add_argument(
         '--cfg-options',
         nargs='+',
@@ -47,6 +45,8 @@ def parse_args():
         choices=['none', 'pytorch', 'slurm', 'mpi'],
         default='none',
         help='job launcher')
+    parser.add_argument(
+        '--tta', action='store_true', help='Test time augmentation')
     # When using PyTorch version >= 2.0.0, the `torch.distributed.launch`
     # will pass the `--local-rank` parameter to `tools/train.py` instead
     # of `--local_rank`.
@@ -63,10 +63,31 @@ def parse_args():
     return args
 
 
+def trigger_visualization_hook(cfg, args):
+    default_hooks = cfg.default_hooks
+    if 'visualization' in default_hooks:
+        visualization_hook = default_hooks['visualization']
+        # Turn on visualization
+        visualization_hook['draw'] = True
+        if args.show:
+            visualization_hook['show'] = True
+            visualization_hook['wait_time'] = args.wait_time
+        if args.show_dir:
+            visualizer = cfg.visualizer
+            visualizer['save_dir'] = args.show_dir
+    else:
+        raise RuntimeError(
+            'VisualizationHook must be included in default_hooks.'
+            'refer to usage '
+            '"visualization=dict(type=\'VisualizationHook\')"')
+
+    return cfg
+
+
 def main():
     args = parse_args()
     colossalai.launch_from_torch(config=args.colocfg, seed=4396)
-    
+
     # load config
     cfg = Config.fromfile(args.config)
     cfg.launcher = args.launcher
@@ -82,35 +103,26 @@ def main():
         cfg.work_dir = osp.join('./work_dirs',
                                 osp.splitext(osp.basename(args.config))[0])
 
-    # enable automatic-mixed-precision training
-    if args.amp is True:
-        optim_wrapper = cfg.optim_wrapper.type
-        if optim_wrapper == 'AmpOptimWrapper':
-            print_log(
-                'AMP training is already enabled in your config.',
-                logger='current',
-                level=logging.WARNING)
-        else:
-            assert optim_wrapper == 'OptimWrapper', (
-                '`--amp` is only supported when the optimizer wrapper type is '
-                f'`OptimWrapper` but got {optim_wrapper}.')
-            cfg.optim_wrapper.type = 'AmpOptimWrapper'
-            cfg.optim_wrapper.loss_scale = 'dynamic'
+    cfg.load_from = args.checkpoint
 
-    # resume training
-    cfg.resume = args.resume
+    if args.show or args.show_dir:
+        cfg = trigger_visualization_hook(cfg, args)
+
+    if args.tta:
+        cfg.test_dataloader.dataset.pipeline = cfg.tta_pipeline
+        cfg.tta_model.module = cfg.model
+        cfg.model = cfg.tta_model
+
+    # add output_dir in metric
+    if args.out is not None:
+        cfg.test_evaluator['output_dir'] = args.out
+        cfg.test_evaluator['keep_results'] = True
 
     # build the runner from config
-    if 'runner_type' not in cfg:
-        # build the default runner
-        runner = Runner.from_cfg(cfg)
-    else:
-        # build customized runner from the registry
-        # if 'runner_type' is set in the cfg
-        runner = RUNNERS.build(cfg)
+    runner = Runner.from_cfg(cfg)
 
-    # start training
-    runner.train()
+    # start testing
+    runner.test()
 
 
 if __name__ == '__main__':

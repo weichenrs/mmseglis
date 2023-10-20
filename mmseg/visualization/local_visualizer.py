@@ -134,7 +134,7 @@ class SegLocalVisualizer(Visualizer):
         labels = np.array(ids, dtype=np.int64)
 
         colors = [palette[label] for label in labels]
-
+                
         mask = np.zeros_like(image, dtype=np.uint8)
         for label, color in zip(labels, colors):
             mask[sem_seg[0] == label, :] = color
@@ -165,6 +165,11 @@ class SegLocalVisualizer(Visualizer):
                 text = classes[classes_id]
                 (label_width, label_height), baseline = cv2.getTextSize(
                     text, font, fontScale, thickness)
+                # import torch.distributed as dist
+                # if dist.get_rank() == 0:
+                #     import pdb;pdb.set_trace()
+                # dist.barrier()
+                mask = np.ascontiguousarray(mask)
                 mask = cv2.rectangle(mask, loc,
                                      (loc[0] + label_width + baseline,
                                       loc[1] + label_height + baseline),
