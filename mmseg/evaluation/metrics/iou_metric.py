@@ -48,7 +48,7 @@ class IoUMetric(BaseMetric):
                  iou_metrics: List[str] = ['mIoU'],
                  nan_to_num: Optional[int] = None,
                  beta: int = 1,
-                 collect_device: str = 'cpu',
+                 collect_device: str = 'gpu',
                  output_dir: Optional[str] = None,
                  format_only: bool = False,
                  prefix: Optional[str] = None,
