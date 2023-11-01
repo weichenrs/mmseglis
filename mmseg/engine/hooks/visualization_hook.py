@@ -13,6 +13,8 @@ from mmseg.structures import SegDataSample
 from mmseg.visualization import SegLocalVisualizer
 
 import numpy as np
+import torch.distributed as dist
+import torch
 
 @HOOKS.register_module()
 class SegVisualizationHook(Hook):
@@ -38,7 +40,7 @@ class SegVisualizationHook(Hook):
     """
 
     def __init__(self,
-                 draw: bool = False,
+                 draw: bool = True,
                  interval: int = 50,
                  show: bool = False,
                  wait_time: float = 0.,
@@ -86,7 +88,21 @@ class SegVisualizationHook(Hook):
             # for output in outputs:
             for ind in range(len(outputs)):
                 output = outputs[ind]
-                img = np.array(data_batch['inputs'][ind]).transpose(1,2,0)
+                img = np.array(data_batch['inputs'][ind].cpu()).transpose(1,2,0)  
+                
+                img_list = [None] * dist.get_world_size()
+                output_list = [None] * dist.get_world_size()
+                dist.gather_object(img, img_list if dist.get_rank() == 0 else None, dst=0)
+                dist.gather_object(output, output_list if dist.get_rank() == 0 else None, dst=0)
+
+                if dist.get_rank() == 0:
+                    img = np.concatenate([x for x in img_list], 0)
+                    new_gt_sem_seg = torch.cat([x.gt_sem_seg.data.cuda(0) for x in output_list], -2)
+                    new_pred_sem_seg = torch.cat([x.pred_sem_seg.data.cuda(0) for x in output_list], -2)
+                    del output.gt_sem_seg.data, output.pred_sem_seg.data
+                    output.gt_sem_seg.data = new_gt_sem_seg
+                    output.pred_sem_seg.data = new_pred_sem_seg
+                    
                 img_path = output.img_path
                 
                 # img_bytes = fileio.get(

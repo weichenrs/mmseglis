@@ -103,7 +103,7 @@ class SegLocalVisualizer(Visualizer):
                       sem_seg: PixelData,
                       classes: Optional[List],
                       palette: Optional[List],
-                      withLabels: Optional[bool] = True) -> np.ndarray:
+                      withLabels: Optional[bool] = False) -> np.ndarray:
         """Draw semantic seg of GT or prediction.
 
         Args:
@@ -165,10 +165,6 @@ class SegLocalVisualizer(Visualizer):
                 text = classes[classes_id]
                 (label_width, label_height), baseline = cv2.getTextSize(
                     text, font, fontScale, thickness)
-                # import torch.distributed as dist
-                # if dist.get_rank() == 0:
-                #     import pdb;pdb.set_trace()
-                # dist.barrier()
                 mask = np.ascontiguousarray(mask)
                 mask = cv2.rectangle(mask, loc,
                                      (loc[0] + label_width + baseline,
@@ -177,7 +173,7 @@ class SegLocalVisualizer(Visualizer):
                 mask = cv2.rectangle(mask, loc,
                                      (loc[0] + label_width + baseline,
                                       loc[1] + label_height + baseline),
-                                     (0, 0, 0), rectangleThickness)
+                                     (1, 1, 1), rectangleThickness)
                 mask = cv2.putText(mask, text, (loc[0], loc[1] + label_height),
                                    font, fontScale, fontColor, thickness,
                                    lineType)
@@ -270,7 +266,7 @@ class SegLocalVisualizer(Visualizer):
             # TODO: Supported in mmengine's Viusalizer.
             out_file: Optional[str] = None,
             step: int = 0,
-            withLabels: Optional[bool] = True) -> None:
+            withLabels: Optional[bool] = False) -> None:
         """Draw datasample and save to all backends.
 
         - If GT and prediction are plotted at the same time, they are
@@ -338,6 +334,10 @@ class SegLocalVisualizer(Visualizer):
                 pred_img_data = self._draw_depth_map(
                     pred_img_data, data_sample.pred_depth_map)
 
+        pred_img_data[:,:,0:1][np.sum(gt_img_data,-1)==0] = 0
+        pred_img_data[:,:,1:2][np.sum(gt_img_data,-1)==0] = 0
+        pred_img_data[:,:,2:3][np.sum(gt_img_data,-1)==0] = 0
+        
         if gt_img_data is not None and pred_img_data is not None:
             drawn_img = np.concatenate((gt_img_data, pred_img_data), axis=1)
         elif gt_img_data is not None:

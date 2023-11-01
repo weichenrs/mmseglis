@@ -14,8 +14,7 @@ from mmengine.runner.amp import autocast
 from mmengine.runner.base_loop import BaseLoop
 from mmengine.runner.utils import calc_dynamic_intervals
 
-from colossalai.context import ParallelMode
-from colossalai.core import global_context as gpc
+import torch.distributed as dist
 from mmseg.structures import SegDataSample
 
 class _InfiniteDataloaderIterator:
@@ -148,29 +147,11 @@ class SPIterBasedTrainLoop(BaseLoop):
         # In iteration-based training loop, we treat the whole training process
         # as a big epoch and execute the corresponding hook.
         self.runner.call_hook('before_train_epoch')
-        num_batch_size = self.dataloader_iterator._dataloader.batch_size
-        
         while self._iter < self._max_iters and not self.stop_training:
             self.runner.model.train()
             
-            data_batch = {'inputs': None, 'data_samples': None}
-            inputs = [None for _ in range(num_batch_size)]
-            data_samples = [SegDataSample() for _ in range(num_batch_size)]
-            
-            if gpc.get_local_rank(ParallelMode.SEQUENCE) == 0:    
-                data_batch = next(self.dataloader_iterator)
-                inputs = data_batch['inputs']
-                data_samples = data_batch['data_samples']
-
-            torch.distributed.broadcast_object_list(inputs, src=0)
-            torch.distributed.broadcast_object_list(data_samples, src=0)
-
-            if gpc.get_local_rank(ParallelMode.SEQUENCE) != 0:    
-                data_batch['inputs'] = inputs
-                data_batch['data_samples'] = data_samples
-
-            self.run_iter(data_batch)
-
+            data_batch = next(self.dataloader_iterator)
+            self.run_iter(data_batch)     
             self._decide_current_val_interval()
             if (self.runner.val_loop is not None
                     and self._iter >= self.val_begin
@@ -253,45 +234,13 @@ class SPValLoop(BaseLoop):
         self.runner.call_hook('before_val_epoch')
         self.runner.model.eval()
         
-        num_batch_size = self.dataloader.batch_size
-        self._iterator = iter(self.dataloader)
+        self.num_batch_size = self.dataloader.batch_size
         
-        for idx in range(len(self.dataloader)):
-            # data_batch = next(self._iterator)
-            # print('rank:', gpc.get_local_rank(ParallelMode.SEQUENCE))
-            # print('iter:', idx)
-            # print('name:', data_batch['data_samples'][0].img_path)
-            # self.run_iter(idx, data_batch)
-            
-            data_batch = {'inputs': None, 'data_samples': None}
-            inputs = [None for _ in range(num_batch_size)]
-            data_samples = [SegDataSample() for _ in range(num_batch_size)]
-            
-            if gpc.get_local_rank(ParallelMode.SEQUENCE) == 0:    
-                data_batch = next(self._iterator)
-                inputs = data_batch['inputs']
-                data_samples = data_batch['data_samples']
-
-            torch.distributed.broadcast_object_list(inputs, src=0)
-            torch.distributed.broadcast_object_list(data_samples, src=0)
-
-            if gpc.get_local_rank(ParallelMode.SEQUENCE) != 0:    
-                data_batch['inputs'] = inputs
-                data_batch['data_samples'] = data_samples
-
-            # print('rank:', gpc.get_local_rank(ParallelMode.SEQUENCE))
-            # print('iter:', idx)
-            # print('name:', data_batch['data_samples'][0].img_path)
+        for idx, data_batch in enumerate(self.dataloader):
             self.run_iter(idx, data_batch)
-            
-        # for idx, data_batch in enumerate(self.dataloader):
-        #     print('rank:', gpc.get_local_rank(ParallelMode.SEQUENCE))
-        #     print('iter:', idx)
-        #     print('name:', data_batch['data_samples'][0].img_path)
-        #     self.run_iter(idx, data_batch)
 
         # compute metrics
-        metrics = self.evaluator.evaluate(len(self.dataloader.dataset))
+        metrics = self.evaluator.evaluate(len(self.dataloader.dataset) * dist.get_world_size())
         self.runner.call_hook('after_val_epoch', metrics=metrics)
         self.runner.call_hook('after_val')
         return metrics
@@ -308,12 +257,12 @@ class SPValLoop(BaseLoop):
             'before_val_iter', batch_idx=idx, data_batch=data_batch)
         # outputs should be sequence of BaseDataElement
         with autocast(enabled=self.fp16):
-            outputs = self.runner.model.val_step(data_batch)
-        self.evaluator.process(data_samples=outputs, data_batch=data_batch)
+            outputs, mod_data = self.runner.model.val_step(data_batch)
+        self.evaluator.process(data_samples=outputs, data_batch=mod_data)
         self.runner.call_hook(
             'after_val_iter',
             batch_idx=idx,
-            data_batch=data_batch,
+            data_batch=mod_data,
             outputs=outputs)
 
 
@@ -363,7 +312,7 @@ class SPTestLoop(BaseLoop):
             self.run_iter(idx, data_batch)
 
         # compute metrics
-        metrics = self.evaluator.evaluate(len(self.dataloader.dataset))
+        metrics = self.evaluator.evaluate(len(self.dataloader.dataset) * dist.get_world_size())
         self.runner.call_hook('after_test_epoch', metrics=metrics)
         self.runner.call_hook('after_test')
         return metrics
@@ -379,10 +328,10 @@ class SPTestLoop(BaseLoop):
             'before_test_iter', batch_idx=idx, data_batch=data_batch)
         # predictions should be sequence of BaseDataElement
         with autocast(enabled=self.fp16):
-            outputs = self.runner.model.test_step(data_batch)
-        self.evaluator.process(data_samples=outputs, data_batch=data_batch)
+            outputs, mod_data = self.runner.model.test_step(data_batch)
+        self.evaluator.process(data_samples=outputs, data_batch=mod_data)
         self.runner.call_hook(
             'after_test_iter',
             batch_idx=idx,
-            data_batch=data_batch,
+            data_batch=mod_data,
             outputs=outputs)
