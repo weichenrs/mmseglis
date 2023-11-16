@@ -12,13 +12,13 @@ param_scheduler = [
         by_epoch=False)
 ]
 # training schedule for 80k
-train_cfg = dict(type='SPIterBasedTrainLoop', max_iters=80000, val_interval=10)
+train_cfg = dict(type='SPIterBasedTrainLoop', max_iters=80000, val_interval=4000)
 val_cfg = dict(type='SPValLoop')
 test_cfg = dict(type='SPTestLoop')
 default_hooks = dict(
     timer=dict(type='IterTimerHook'),
-    logger=dict(type='LoggerHook', interval=10, log_metric_by_epoch=False),
+    logger=dict(type='LoggerHook', interval=50, log_metric_by_epoch=False),
     param_scheduler=dict(type='ParamSchedulerHook'),
-    checkpoint=dict(type='CheckpointHook', by_epoch=False, interval=8000),
+    checkpoint=dict(type='CheckpointHook', by_epoch=False, interval=4000),
     sampler_seed=dict(type='DistSamplerSeedHook'),
     visualization=dict(type='SegVisualizationHook'))

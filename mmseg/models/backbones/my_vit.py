@@ -771,10 +771,10 @@ def MYmulti_head_attention_forward(
 
     if need_weights:
         B, Nt, E = q.shape
+        
+        
         q_scaled = q / math.sqrt(E)
-
         assert not (is_causal and attn_mask is None), "FIXME: is_causal not implemented for need_weights"
-
         if attn_mask is not None:
             attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
         else:
@@ -782,8 +782,8 @@ def MYmulti_head_attention_forward(
         attn_output_weights = F.softmax(attn_output_weights, dim=-1)
         if dropout_p > 0.0:
             attn_output_weights = F.dropout(attn_output_weights, p=dropout_p)
-
         attn_output = torch.bmm(attn_output_weights, v)
+
 
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
         attn_output = linear(attn_output, out_proj_weight, out_proj_bias)

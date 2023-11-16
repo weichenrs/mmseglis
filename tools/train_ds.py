@@ -4,19 +4,18 @@ import logging
 import os
 import os.path as osp
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ['RANK'] = '0'
 # os.environ['LOCAL_RANK'] = '0'
 # os.environ['WORLD_SIZE'] = '1'
-# os.environ['MASTER_ADDR'] = '127.0.0.1' 
+# os.environ['MASTER_ADDR'] = '127.0.0.1'
 # os.environ['MASTER_PORT'] = '12325'
 
 from mmengine.config import Config, DictAction
 from mmengine.logging import print_log
-from mmengine.runner import Runner
+from mmengine.runner import Runner, FlexibleRunner
 
 from mmseg.registry import RUNNERS
-import colossalai
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a segmentor')
@@ -51,11 +50,6 @@ def parse_args():
     # will pass the `--local-rank` parameter to `tools/train.py` instead
     # of `--local_rank`.
     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
-    parser.add_argument(
-        '--colocfg', 
-        type=str, 
-        default='configs/_base_/colo_config.py',
-        help='path to the config file')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -65,8 +59,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    colossalai.launch_from_torch(config=args.colocfg, seed=4396)
-    
+
     # load config
     cfg = Config.fromfile(args.config)
     cfg.launcher = args.launcher
@@ -103,7 +96,8 @@ def main():
     # build the runner from config
     if 'runner_type' not in cfg:
         # build the default runner
-        runner = Runner.from_cfg(cfg)
+        # runner = Runner.from_cfg(cfg)
+        runner = FlexibleRunner.from_cfg(cfg)
     else:
         # build customized runner from the registry
         # if 'runner_type' is set in the cfg

@@ -65,6 +65,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    import torch
+    from colossalai.tensor.op_wrapper import colo_op_impl
+    colo_op_impl(torch.Tensor.add_)(torch.add)
+    
     colossalai.launch_from_torch(config=args.colocfg, seed=4396)
     
     # load config

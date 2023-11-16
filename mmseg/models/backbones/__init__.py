@@ -26,9 +26,15 @@ from .vit import VisionTransformer
 from .vpd import VPD
 
 from .sp_vit import SPVisionTransformer
-from .sp_swin import SPSwinTransformer
-from .tp_swin import TPSwinTransformer
 from .my_vit import MYVisionTransformer
+# from .sp_swin import SPSwinTransformer
+# from .tp_swin import TPSwinTransformer
+# from .vit_ds import VisionTransformer_ds
+from .my_vit_fa import MYVisionTransformer_fa
+from .my_vit_ds import MYVisionTransformer_ds
+from .my_vit_fa_ds import MYVisionTransformer_fa_ds
+from .my_vit_fa_nods import MYVisionTransformer_fa_nods
+
 __all__ = [
     'ResNet', 'ResNetV1c', 'ResNetV1d', 'ResNeXt', 'HRNet', 'FastSCNN',
     'ResNeSt', 'MobileNetV2', 'UNet', 'CGNet', 'MobileNetV3',
@@ -36,5 +42,9 @@ __all__ = [
     'BiSeNetV1', 'BiSeNetV2', 'ICNet', 'TIMMBackbone', 'ERFNet', 'PCPVT',
     'SVT', 'STDCNet', 'STDCContextPathNet', 'BEiT', 'MAE', 'PIDNet', 'MSCAN',
     'DDRNet', 'VPD',
-    'SPVisionTransformer', 'SPSwinTransformer', 'TPSwinTransformer', 'MYVisionTransformer'
+    'SPVisionTransformer', 'MYVisionTransformer',
+    # 'VisionTransformer_ds', 
+    'MYVisionTransformer_fa', 'MYVisionTransformer_ds',
+    'MYVisionTransformer_fa_ds', 'MYVisionTransformer_fa_nods'
+
 ]

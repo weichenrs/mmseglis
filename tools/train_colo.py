@@ -4,11 +4,11 @@ import logging
 import os
 import os.path as osp
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ['RANK'] = '0'
 # os.environ['LOCAL_RANK'] = '0'
 # os.environ['WORLD_SIZE'] = '1'
-# os.environ['MASTER_ADDR'] = '127.0.0.1' 
+# os.environ['MASTER_ADDR'] = '127.0.0.1'
 # os.environ['MASTER_PORT'] = '12325'
 
 from mmengine.config import Config, DictAction
@@ -16,7 +16,7 @@ from mmengine.logging import print_log
 from mmengine.runner import Runner
 
 from mmseg.registry import RUNNERS
-import colossalai
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a segmentor')
@@ -65,6 +65,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    import torch
+    import colossalai
+    # from colossalai.tensor.op_wrapper import colo_op_impl
+    # colo_op_impl(torch.Tensor.add_)(torch.add)
+    
     colossalai.launch_from_torch(config=args.colocfg, seed=4396)
     
     # load config

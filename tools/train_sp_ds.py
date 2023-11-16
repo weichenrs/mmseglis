@@ -4,16 +4,16 @@ import logging
 import os
 import os.path as osp
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 # os.environ['RANK'] = '0'
 # os.environ['LOCAL_RANK'] = '0'
 # os.environ['WORLD_SIZE'] = '1'
-# os.environ['MASTER_ADDR'] = '127.0.0.1' 
-# os.environ['MASTER_PORT'] = '12325'
+# os.environ['MASTER_ADDR'] = '127.0.0.1'
+# os.environ['MASTER_PORT'] = '13225'
 
 from mmengine.config import Config, DictAction
 from mmengine.logging import print_log
-from mmengine.runner import Runner
+from mmengine.runner import Runner, FlexibleRunner
 
 from mmseg.registry import RUNNERS
 import colossalai
@@ -103,7 +103,8 @@ def main():
     # build the runner from config
     if 'runner_type' not in cfg:
         # build the default runner
-        runner = Runner.from_cfg(cfg)
+        # runner = Runner.from_cfg(cfg)
+        runner = FlexibleRunner.from_cfg(cfg)
     else:
         # build customized runner from the registry
         # if 'runner_type' is set in the cfg

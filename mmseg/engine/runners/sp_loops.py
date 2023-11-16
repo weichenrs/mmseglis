@@ -173,9 +173,21 @@ class SPIterBasedTrainLoop(BaseLoop):
         # Enable gradient accumulation mode and avoid unnecessary gradient
         # synchronization during gradient accumulation process.
         # outputs should be a dict of loss.
+        
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()
+        
         outputs = self.runner.model.train_step(
             data_batch, optim_wrapper=self.runner.optim_wrapper)
-
+        
+        # if torch.isnan(outputs['loss'].data):
+        #     import torch.distributed as dist
+        #     if dist.get_rank() == 0:
+        #         import pdb;pdb.set_trace()
+        #     dist.barrier()
+        
         self.runner.call_hook(
             'after_train_iter',
             batch_idx=self._iter,
@@ -238,7 +250,12 @@ class SPValLoop(BaseLoop):
         
         for idx, data_batch in enumerate(self.dataloader):
             self.run_iter(idx, data_batch)
-
+            
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()
+        
         # compute metrics
         metrics = self.evaluator.evaluate(len(self.dataloader.dataset) * dist.get_world_size())
         self.runner.call_hook('after_val_epoch', metrics=metrics)
@@ -258,6 +275,10 @@ class SPValLoop(BaseLoop):
         # outputs should be sequence of BaseDataElement
         with autocast(enabled=self.fp16):
             outputs, mod_data = self.runner.model.val_step(data_batch)
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()
         self.evaluator.process(data_samples=outputs, data_batch=mod_data)
         self.runner.call_hook(
             'after_val_iter',

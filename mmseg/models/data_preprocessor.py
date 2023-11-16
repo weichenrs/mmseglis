@@ -8,8 +8,10 @@ from mmengine.model import BaseDataPreprocessor
 from mmseg.registry import MODELS
 from mmseg.utils import stack_batch, sp_stack_batch
 
-from colossalai.context import ParallelMode
-from colossalai.core import global_context as gpc
+# from colossalai.context import ParallelMode
+# from colossalai.core import global_context as gpc
+
+import torch.distributed as dist
 
 @MODELS.register_module()
 class SPSegDataPreProcessor(BaseDataPreprocessor):
@@ -151,20 +153,31 @@ class SPSegDataPreProcessor(BaseDataPreprocessor):
             else:
                 inputs = torch.stack(inputs, dim=0)
                 
-        # inputs = [torch.chunk(input, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)
-        #         [gpc.get_local_rank(ParallelMode.SEQUENCE)] 
-        #         for input in inputs]
-        inputs = torch.chunk(inputs, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)] 
+        # inputs = torch.chunk(inputs, gpc.get_world_size(ParallelMode.SEQUENCE), dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)] 
+
+        # # if training:
+        # for data_sample in data_samples:
+        #     temp = data_sample.gt_sem_seg.data
+        #     del data_sample.gt_sem_seg.data
+        #     data_sample.gt_sem_seg.data = torch.chunk(temp, gpc.get_world_size(ParallelMode.SEQUENCE), 
+        #                                     dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
+        #     data_sample.set_metainfo({'img_shape': (data_sample.img_shape[0]//gpc.get_world_size(ParallelMode.SEQUENCE), 
+        #                                             data_sample.img_shape[1]),
+        #                                 'ori_shape': (data_sample.ori_shape[0]//gpc.get_world_size(ParallelMode.SEQUENCE), 
+        #                                             data_sample.ori_shape[1]),
+        #                                 })
+        
+        inputs = torch.chunk(inputs, dist.get_world_size(), dim=-2)[dist.get_rank()] 
 
         # if training:
         for data_sample in data_samples:
             temp = data_sample.gt_sem_seg.data
             del data_sample.gt_sem_seg.data
-            data_sample.gt_sem_seg.data = torch.chunk(temp, gpc.get_world_size(ParallelMode.SEQUENCE), 
-                                            dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
-            data_sample.set_metainfo({'img_shape': (data_sample.img_shape[0]//gpc.get_world_size(ParallelMode.SEQUENCE), 
+            data_sample.gt_sem_seg.data = torch.chunk(temp, dist.get_world_size(), 
+                                            dim=-2)[dist.get_rank()]
+            data_sample.set_metainfo({'img_shape': (data_sample.img_shape[0]//dist.get_world_size(), 
                                                     data_sample.img_shape[1]),
-                                        'ori_shape': (data_sample.ori_shape[0]//gpc.get_world_size(ParallelMode.SEQUENCE), 
+                                        'ori_shape': (data_sample.ori_shape[0]//dist.get_world_size(), 
                                                     data_sample.ori_shape[1]),
                                         })
         

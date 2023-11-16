@@ -23,11 +23,144 @@ from mmengine.utils import deprecated_api_warning
 from mmseg.registry import MODELS
 from ..utils import PatchEmbed, resize
 
-from colossalai.context import ParallelMode
-from colossalai.core import global_context as gpc
-from colossalai.nn.layer.parallel_sequence._operation import RingAV, RingQK
+from deepspeed.accelerator import get_accelerator
+# from deepspeed.sequence.layer import DistributedAttention
 
-class SPViTSelfAttention(BaseModule):
+import torch.distributed as dist
+global _SEQUENCE_PARALLEL_GROUP
+_SEQUENCE_PARALLEL_GROUP = dist.new_group(range(0, dist.get_world_size()))
+
+try:
+    # FlashAttention (1.x)
+    from flash_attn.flash_attn_interface import flash_attn_unpadded_func
+    from flash_attn.flash_attn_triton import flash_attn_func
+except ImportError:
+    flash_attn_unpadded_func = None
+    flash_attn_func = None
+
+try:
+    # FlashAttention-2
+    from flash_attn.flash_attn_interface import flash_attn_varlen_func
+except ImportError:
+    flash_attn_varlen_func = None
+
+FlashAttentionBuilder = get_accelerator().get_op_builder("FlashAttentionBuilder")
+flash_attn_builder = None
+
+class FlashSelfAttention(torch.nn.Module):
+    """Implement the scaled dot product attention with softmax.
+    Arguments
+    ---------
+        softmax_scale: The temperature to use for the softmax attention.
+                      (default: 1/sqrt(d_keys) where d_keys is computed at
+                      runtime)
+        attention_dropout: The dropout rate to apply to the attention
+                           (default: 0.0)
+    """
+    def __init__(self, causal=False, softmax_scale=None, attention_dropout=0.0,
+                 device=None, dtype=None):
+        super().__init__()
+        assert flash_attn_unpadded_func is not None or flash_attn_varlen_func is not None or flash_attn_builder is not None, \
+            ('Please install FlashAttention first, e.g., with pip install flash-attn or implement your own flash attention')
+        assert rearrange is not None, 'Please install einops first, e.g., with pip install einops'
+        self.causal = causal
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+        # Use FlashAttention-2 when args.use_flash_attn_v2 is True
+        # args = get_args()
+        # self.flash_attn_func = flash_attn_varlen_func if args.use_flash_attn_v2 else flash_attn_unpadded_func
+        self.flash_attn_func = flash_attn_unpadded_func
+
+    def forward(self, q, k, v):
+        """Implements the multihead softmax attention.
+        Arguments
+        ---------
+            q, k, v: The tensor containing the query, key, and value. (B, S, H, D)
+        """
+
+        assert all((i.dtype in [torch.float16, torch.bfloat16] for i in (q,k,v)))
+        assert all((get_accelerator().on_accelerator(i) for i in (q, k, v)))
+        # if get_accelerator().device_name() == 'cuda':
+        #     assert all((i.is_cuda for i in (q,k,v)))
+        # else:
+        #     assert all((i.is_xpu for i in (q,k,v)))
+
+        batch_size, seqlen_q = q.shape[0], q.shape[1]
+        seqlen_k = k.shape[1]
+
+        if get_accelerator().device_name() == 'cuda':
+            # goes for cuda device
+            q, k, v = [rearrange(x, 'b s ... -> (b s) ...') for x in [q, k, v]]
+            cu_seqlens_q = torch.arange(0, (batch_size + 1) * seqlen_q, step=seqlen_q, dtype=torch.int32,
+                                        device=q.device)
+        else:
+            # goes for other device
+            q, k, v = [rearrange(x, 'b s h d -> b h s d').contiguous() for x in [q, k, v]]
+
+        if self.training:
+            # during training q,k,v always have same seqlen
+            assert seqlen_k == seqlen_q
+
+            is_causal = self.causal
+            cu_seqlens_k = cu_seqlens_q if get_accelerator().device_name() == 'cuda' else None
+        else:
+            # turn off FA causal mask after first inference autoregressive iteration
+            # only on first autoregressive step q,k,v have same seqlen
+            is_causal = seqlen_q == seqlen_k
+            cu_seqlens_k = torch.arange(0, (batch_size + 1) * seqlen_k, step=seqlen_k, dtype=torch.int32,
+                        device=q.device) if get_accelerator().device_name() == 'cuda' else None
+            self.dropout_p = 0
+
+        output = self.flash_attn_func(
+            q, k, v, cu_seqlens_q, cu_seqlens_k, seqlen_q, seqlen_k,
+            self.dropout_p,
+            softmax_scale=self.softmax_scale, causal=is_causal
+        ) if get_accelerator().device_name() == 'cuda' else flash_attn_builder.flash_attn_func(
+            q, k, v, self.dropout_p, self.softmax_scale, is_causal
+        )
+
+        output = rearrange(output, '(b s) ... -> b s ...', b=batch_size) if get_accelerator().device_name() == 'cuda' else rearrange(
+            output, 'b h s d -> b s h d').contiguous()
+        return output
+
+from einops import rearrange
+class FlashSelfAttentionTriton(torch.nn.Module):
+    """Implement the scaled dot product attention with softmax.
+    Arguments
+    ---------
+        softmax_scale: The temperature to use for the softmax attention.
+                      (default: 1/sqrt(d_keys) where d_keys is computed at
+                      runtime)
+        attention_dropout: The dropout rate to apply to the attention
+                           (default: 0.0)
+    """
+    def __init__(self, causal=False, softmax_scale=None, attention_dropout=0.0,
+                 device=None, dtype=None):
+        super().__init__()
+        assert flash_attn_func is not None, ('Triton version of FlashAttention is not installed.')
+        assert rearrange is not None, 'Please install einops first, e.g., with pip install einops'
+        self.causal = causal
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+    def forward(self, q, k, v):
+        """Implements the multihead softmax attention.
+        Arguments
+        ---------
+            q, k, v: The tensor containing the query, key, and value. (B, S, H, D)
+        """
+
+        assert q.dtype in [torch.float16, torch.bfloat16]
+        assert q.is_cuda
+        q, k, v = [rearrange(x, 's b ... -> b s ...').contiguous()
+                       for x in (q, k, v)]
+        
+        output = flash_attn_func(q, k, v, None, self.causal)
+        output = rearrange(output, 'b s h d -> s b (h d)').contiguous()
+        return output
+
+class MYViTSelfAttention(BaseModule):
     """A wrapper for ``torch.nn.MultiheadAttention``.
 
     This module implements MultiheadAttention with identity connection,
@@ -74,15 +207,15 @@ class SPViTSelfAttention(BaseModule):
 
         # self.attn = nn.MultiheadAttention(embed_dims, num_heads, attn_drop,
         #                                   **kwargs)
-        self.attn = SPMultiheadAttention(embed_dims, num_heads, attn_drop,
+        self.attn = MYMultiheadAttention(embed_dims, num_heads, attn_drop,
                                     **kwargs)
-        self.world_size = gpc.get_world_size(ParallelMode.SEQUENCE)
+
         self.proj_drop = nn.Dropout(proj_drop)
         self.dropout_layer = build_dropout(
             dropout_layer) if dropout_layer else nn.Identity()
         
     @deprecated_api_warning({'residual': 'identity'},
-                            cls_name='SPMultiheadAttention')
+                            cls_name='MYMultiheadAttention')
     def forward(self,
                 query,
                 key=None,
@@ -162,7 +295,7 @@ class SPViTSelfAttention(BaseModule):
             query = query.transpose(0, 1)
             key = key.transpose(0, 1)
             value = value.transpose(0, 1)
-
+                    
         out = self.attn(
             query=query,
             key=key,
@@ -181,7 +314,7 @@ from typing import Optional, Tuple
 from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
-class SPMultiheadAttention(BaseModule):
+class MYMultiheadAttention(BaseModule):
     
     __constants__ = ['batch_first']
     
@@ -225,6 +358,12 @@ class SPMultiheadAttention(BaseModule):
             
         self.add_zero_attn = add_zero_attn
 
+        # self.dist_attn = DistributedAttention(F.scaled_dot_product_attention, _SEQUENCE_PARALLEL_GROUP)    
+        # self.dist_attn = DistributedAttention(flash_attn_func, _SEQUENCE_PARALLEL_GROUP)        
+        # self.dist_attn = DistributedAttention(FlashSelfAttentionTriton(attention_dropout=self.dropout), _SEQUENCE_PARALLEL_GROUP)   
+        # self.dist_attn = DistributedAttention(FlashSelfAttention(attention_dropout=self.dropout), _SEQUENCE_PARALLEL_GROUP,
+        #                                       scatter_idx = 2, gather_idx = 1)   
+
         self._reset_parameters()
         
     def _reset_parameters(self):
@@ -257,7 +396,7 @@ class SPMultiheadAttention(BaseModule):
             key: Tensor,
             value: Tensor,
             key_padding_mask: Optional[Tensor] = None,
-            need_weights: bool = True,
+            need_weights: bool = False,
             attn_mask: Optional[Tensor] = None,
             average_attn_weights: bool = True,
             is_causal : bool = False) -> Tuple[Tensor, Optional[Tensor]]:
@@ -365,7 +504,7 @@ class SPMultiheadAttention(BaseModule):
                 query, key, value = [x.transpose(1, 0) for x in (query, key, value)]
 
         if not self._qkv_same_embed_dim:
-            attn_output, attn_output_weights = SPmulti_head_attention_forward(
+            attn_output, attn_output_weights = MYmulti_head_attention_forward(
                 query, key, value, self.embed_dim, self.num_heads,
                 self.in_proj_weight, self.in_proj_bias,
                 self.bias_k, self.bias_v, self.add_zero_attn,
@@ -379,7 +518,7 @@ class SPMultiheadAttention(BaseModule):
                 average_attn_weights=average_attn_weights,
                 is_causal=is_causal)
         else:
-            attn_output, attn_output_weights = SPmulti_head_attention_forward(
+            attn_output, attn_output_weights = MYmulti_head_attention_forward(
                 query, key, value, self.embed_dim, self.num_heads,
                 self.in_proj_weight, self.in_proj_bias,
                 self.bias_k, self.bias_v, self.add_zero_attn,
@@ -389,7 +528,9 @@ class SPMultiheadAttention(BaseModule):
                 need_weights=need_weights,
                 attn_mask=attn_mask,
                 average_attn_weights=average_attn_weights,
-                is_causal=is_causal)
+                is_causal=is_causal,
+                # dist_attn=self.dist_attn,
+                batch_first=self.batch_first)
         if self.batch_first and is_batched:
             return attn_output.transpose(1, 0), attn_output_weights
         else:
@@ -456,7 +597,7 @@ linear = torch._C._nn.linear
 # pad.__module__ = "torch.nn.functional"
 # linear = _add_docstr(torch._C._nn.linear, """linear""")
 
-def SPmulti_head_attention_forward(
+def MYmulti_head_attention_forward(
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -472,7 +613,7 @@ def SPmulti_head_attention_forward(
     out_proj_bias: Optional[Tensor],
     training: bool = True,
     key_padding_mask: Optional[Tensor] = None,
-    need_weights: bool = True,
+    need_weights: bool = False,
     attn_mask: Optional[Tensor] = None,
     use_separate_proj_weight: bool = False,
     q_proj_weight: Optional[Tensor] = None,
@@ -482,6 +623,8 @@ def SPmulti_head_attention_forward(
     static_v: Optional[Tensor] = None,
     average_attn_weights: bool = True,
     is_causal: bool = False,
+    # dist_attn = None,
+    batch_first: bool = False,
 ) -> Tuple[Tensor, Optional[Tensor]]:
     r"""
     Args:
@@ -560,7 +703,7 @@ def SPmulti_head_attention_forward(
     tens_ops = (query, key, value, in_proj_weight, in_proj_bias, bias_k, bias_v, out_proj_weight, out_proj_bias)
     if has_torch_function(tens_ops):
         return handle_torch_function(
-            SPmulti_head_attention_forward,
+            MYmulti_head_attention_forward,
             tens_ops,
             query,
             key,
@@ -601,10 +744,14 @@ def SPmulti_head_attention_forward(
         value = value.unsqueeze(1)
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.unsqueeze(0)
-
+    
     # set up shape vars
-    tgt_len, bsz, embed_dim = query.shape
-    src_len, _, _ = key.shape
+    if batch_first == False:
+        bsz, tgt_len, embed_dim = query.shape
+        _, src_len, _ = key.shape
+    else:
+        tgt_len, bsz, embed_dim = query.shape
+        src_len, _, _ = key.shape
 
     key_padding_mask = F._canonical_mask(
         mask=key_padding_mask,
@@ -675,7 +822,6 @@ def SPmulti_head_attention_forward(
         q, k, v = F._in_projection(query, key, value, q_proj_weight, k_proj_weight, v_proj_weight, b_q, b_k, b_v)
 
     # prep attention mask
-
     attn_mask = F._canonical_mask(
         mask=attn_mask,
         mask_name="attn_mask",
@@ -712,42 +858,45 @@ def SPmulti_head_attention_forward(
     else:
         assert bias_k is None
         assert bias_v is None
-
-    #
+        
     # reshape q, k, v for multihead attention and make em batch first
     #
-    q = q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
-    if static_k is None:
-        k = k.view(k.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
-    else:
-        # TODO finish disentangling control flow so we don't do in-projections when statics are passed
-        assert static_k.size(0) == bsz * num_heads, \
-            f"expecting static_k.size(0) of {bsz * num_heads}, but got {static_k.size(0)}"
-        assert static_k.size(2) == head_dim, \
-            f"expecting static_k.size(2) of {head_dim}, but got {static_k.size(2)}"
-        k = static_k
-    if static_v is None:
-        v = v.view(v.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
-    else:
-        # TODO finish disentangling control flow so we don't do in-projections when statics are passed
-        assert static_v.size(0) == bsz * num_heads, \
-            f"expecting static_v.size(0) of {bsz * num_heads}, but got {static_v.size(0)}"
-        assert static_v.size(2) == head_dim, \
-            f"expecting static_v.size(2) of {head_dim}, but got {static_v.size(2)}"
-        v = static_v
+    if need_weights:
+        q = q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
+        if static_k is None:
+            # k = k.view(k.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
+            k = k.view(src_len, bsz * num_heads, head_dim).transpose(0, 1)
+            
+        else:
+            # TODO finish disentangling control flow so we don't do in-projections when statics are passed
+            assert static_k.size(0) == bsz * num_heads, \
+                f"expecting static_k.size(0) of {bsz * num_heads}, but got {static_k.size(0)}"
+            assert static_k.size(2) == head_dim, \
+                f"expecting static_k.size(2) of {head_dim}, but got {static_k.size(2)}"
+            k = static_k
+        if static_v is None:
+            # v = v.view(v.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
+            v = v.view(src_len, bsz * num_heads, head_dim).transpose(0, 1)
+        else:
+            # TODO finish disentangling control flow so we don't do in-projections when statics are passed
+            assert static_v.size(0) == bsz * num_heads, \
+                f"expecting static_v.size(0) of {bsz * num_heads}, but got {static_v.size(0)}"
+            assert static_v.size(2) == head_dim, \
+                f"expecting static_v.size(2) of {head_dim}, but got {static_v.size(2)}"
+            v = static_v
 
-    # add zero attention along batch dimension (now first)
-    if add_zero_attn:
-        zero_attn_shape = (bsz * num_heads, 1, head_dim)
-        k = torch.cat([k, torch.zeros(zero_attn_shape, dtype=k.dtype, device=k.device)], dim=1)
-        v = torch.cat([v, torch.zeros(zero_attn_shape, dtype=v.dtype, device=v.device)], dim=1)
-        if attn_mask is not None:
-            attn_mask = pad(attn_mask, (0, 1))
-        if key_padding_mask is not None:
-            key_padding_mask = pad(key_padding_mask, (0, 1))
+        # add zero attention along batch dimension (now first)
+        if add_zero_attn:
+            zero_attn_shape = (bsz * num_heads, 1, head_dim)
+            k = torch.cat([k, torch.zeros(zero_attn_shape, dtype=k.dtype, device=k.device)], dim=1)
+            v = torch.cat([v, torch.zeros(zero_attn_shape, dtype=v.dtype, device=v.device)], dim=1)
+            if attn_mask is not None:
+                attn_mask = pad(attn_mask, (0, 1))
+            if key_padding_mask is not None:
+                key_padding_mask = pad(key_padding_mask, (0, 1))
 
-    # update source sequence length after adjustments
-    src_len = k.size(1)
+        # update source sequence length after adjustments
+        src_len = k.size(1)
 
     # merge key padding and attention masks
     if key_padding_mask is not None:
@@ -770,49 +919,34 @@ def SPmulti_head_attention_forward(
 
     if need_weights:
         B, Nt, E = q.shape
+        
+        
         q_scaled = q / math.sqrt(E)
-
         assert not (is_causal and attn_mask is None), "FIXME: is_causal not implemented for need_weights"
-
         if attn_mask is not None:
             attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
         else:
-            # attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
-            attn_output_weights = RingQK.apply(
-                q_scaled.contiguous(),    # [batch_size * num_heads, sub_seq_len, head_size]
-                k.contiguous(),    # [batch_size * num_heads, sub_seq_len, head_size],
-                bsz, 
-                num_heads,
-                tgt_len)
-                    
+            attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
         attn_output_weights = F.softmax(attn_output_weights, dim=-1)
         if dropout_p > 0.0:
             attn_output_weights = F.dropout(attn_output_weights, p=dropout_p)
+        attn_output = torch.bmm(attn_output_weights, v)
 
-        # attn_output = torch.bmm(attn_output_weights, v)
-        
-        attn_output = RingAV.apply(
-            attn_output_weights,
-            v.contiguous(), 
-            bsz, 
-            num_heads,
-            head_dim, 
-            tgt_len)
-        
+
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
         attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
         attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
 
-        # # optionally average attention weights over heads
-        # attn_output_weights = attn_output_weights.view(bsz, num_heads, tgt_len, src_len)
-        # if average_attn_weights:
-        #     attn_output_weights = attn_output_weights.mean(dim=1)
+        # optionally average attention weights over heads
+        attn_output_weights = attn_output_weights.view(bsz, num_heads, tgt_len, src_len)
+        if average_attn_weights:
+            attn_output_weights = attn_output_weights.mean(dim=1)
 
         if not is_batched:
             # squeeze the output if input was unbatched
             attn_output = attn_output.squeeze(1)
-            # attn_output_weights = attn_output_weights.squeeze(0)
-        return attn_output, _
+            attn_output_weights = attn_output_weights.squeeze(0)
+        return attn_output, attn_output_weights
     else:
         # attn_mask can be either (L,S) or (N*num_heads, L, S)
         # if attn_mask's shape is (1, L, S) we need to unsqueeze to (1, 1, L, S)
@@ -823,21 +957,53 @@ def SPmulti_head_attention_forward(
             else:
                 attn_mask = attn_mask.view(bsz, num_heads, -1, src_len)
 
-        q = q.view(bsz, num_heads, tgt_len, head_dim)
-        k = k.view(bsz, num_heads, src_len, head_dim)
-        v = v.view(bsz, num_heads, src_len, head_dim)
+        q = q.view(bsz, tgt_len, num_heads, head_dim).transpose(1, 2)
+        k = k.view(bsz, src_len, num_heads, head_dim).transpose(1, 2)
+        v = v.view(bsz, src_len, num_heads, head_dim).transpose(1, 2)
+
+        #TODO bsz, len, dim to bsz, num_heads, tgt_len, head_dim
+        # q = q.view(bsz, num_heads, tgt_len, head_dim)
+        # k = k.view(bsz, num_heads, src_len, head_dim)
+        # v = v.view(bsz, num_heads, src_len, head_dim)
 
         attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask, dropout_p, is_causal)
-        attn_output = attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)
+        # attn_output = attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)
+        attn_output = attn_output.transpose(1, 2).contiguous()
+       
+        # q = q.view(bsz, num_heads, tgt_len, head_dim).transpose(1, 2)
+        # k = k.view(bsz, num_heads, src_len, head_dim).transpose(1, 2)
+        # v = v.view(bsz, num_heads, src_len, head_dim).transpose(1, 2)
 
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()      
+        
+        # q = q.view(bsz, tgt_len, num_heads, head_dim)
+        # k = k.view(bsz, src_len, num_heads, head_dim)
+        # v = v.view(bsz, src_len, num_heads, head_dim)
+
+        # attn_output = dist_attn(q, k, v, attn_mask, dropout_p, is_causal)
+        # attn_output = dist_attn(q, k, v)
+        
+        # attn_output = FlashSelfAttention()(q, k, v)
+        attn_output = attn_output.view(bsz, tgt_len, embed_dim)
+
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
+        # dist.barrier()    
         attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-        attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
+        
+        if batch_first == True:
+            attn_output = attn_output.view(tgt_len, bsz, embed_dim)
+        
         if not is_batched:
             # squeeze the output if input was unbatched
             attn_output = attn_output.squeeze(1)
         return attn_output, None
 
-class SPTransformerEncoderLayer(BaseModule):
+class MYTransformerEncoderLayer(BaseModule):
     """Implements one encoder layer in Vision Transformer.
 
     Args:
@@ -914,7 +1080,7 @@ class SPTransformerEncoderLayer(BaseModule):
     def build_attn(self, attn_cfg):
         # self.attn = MultiheadAttention(**attn_cfg)
         # self.attn = ViTSelfAttention(**attn_cfg)
-        self.attn = SPViTSelfAttention(**attn_cfg)
+        self.attn = MYViTSelfAttention(**attn_cfg)
 
     def build_ffn(self, ffn_cfg):
         self.ffn = FFN(**ffn_cfg)
@@ -942,7 +1108,7 @@ class SPTransformerEncoderLayer(BaseModule):
 
 
 @MODELS.register_module()
-class SPVisionTransformer(BaseModule):
+class MYVisionTransformer_fa_nods(BaseModule):
     """Vision Transformer.
 
     This backbone is the implementation of `An Image is Worth 16x16 Words:
@@ -1064,7 +1230,7 @@ class SPVisionTransformer(BaseModule):
 
         self.with_cls_token = with_cls_token
         self.output_cls_token = output_cls_token
-        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dims))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dims))
         self.pos_embed = nn.Parameter(
             torch.zeros(1, num_patches + 1, embed_dims))
         self.drop_after_pos = nn.Dropout(p=drop_rate)
@@ -1085,7 +1251,7 @@ class SPVisionTransformer(BaseModule):
         self.layers = ModuleList()
         for i in range(num_layers):
             self.layers.append(
-                SPTransformerEncoderLayer(
+                MYTransformerEncoderLayer(
                     embed_dims=embed_dims,
                     num_heads=num_heads,
                     feedforward_channels=mlp_ratio * embed_dims,
@@ -1097,7 +1263,7 @@ class SPVisionTransformer(BaseModule):
                     act_cfg=act_cfg,
                     norm_cfg=norm_cfg,
                     with_cp=with_cp,
-                    batch_first=True))
+                    batch_first=False))
 
         self.final_norm = final_norm
         if final_norm:
@@ -1140,7 +1306,7 @@ class SPVisionTransformer(BaseModule):
             # We only implement the 'jax_impl' initialization implemented at
             # https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py#L353  # noqa: E501
             trunc_normal_(self.pos_embed, std=.02)
-            # trunc_normal_(self.cls_token, std=.02)
+            trunc_normal_(self.cls_token, std=.02)
             for n, m in self.named_modules():
                 if isinstance(m, nn.Linear):
                     trunc_normal_(m.weight, std=.02)
@@ -1173,25 +1339,16 @@ class SPVisionTransformer(BaseModule):
         x_len, pos_len = patched_img.shape[1], pos_embed.shape[1]
         if x_len != pos_len:
             if pos_len == (self.img_size[0] // self.patch_size) * (
-                    self.img_size[1] // self.patch_size):
+                    self.img_size[1] // self.patch_size) + 1:
                 pos_h = self.img_size[0] // self.patch_size
                 pos_w = self.img_size[1] // self.patch_size
             else:
                 raise ValueError(
                     'Unexpected shape of pos_embed, got {}.'.format(
                         pos_embed.shape))
-                            
-            pos_embed = torch.chunk(pos_embed, gpc.get_world_size(ParallelMode.SEQUENCE), 
-                                            dim=-2)[gpc.get_local_rank(ParallelMode.SEQUENCE)]
-            
-            # import torch.distributed as dist
-            # if dist.get_rank() == 0:
-            #     import pdb;pdb.set_trace()
-            # dist.barrier()
-            
-            # pos_embed = self.resize_pos_embed(pos_embed, hw_shape,
-            #                                   (pos_h, pos_w),
-            #                                   self.interpolate_mode)
+            pos_embed = self.resize_pos_embed(pos_embed, hw_shape,
+                                              (pos_h, pos_w),
+                                              self.interpolate_mode)
         return self.drop_after_pos(patched_img + pos_embed)
 
     @staticmethod
@@ -1225,15 +1382,18 @@ class SPVisionTransformer(BaseModule):
         return pos_embed
 
     def forward(self, inputs):
-        B = inputs.shape[0]     
-        # import torch.distributed as dist
-        # if dist.get_rank() == 0:
-        #     import pdb;pdb.set_trace()
-        # dist.barrier()
-        # with torch.autograd.graph.save_on_cpu(pin_memory=True):
+        B = inputs.shape[0]
+
         x, hw_shape = self.patch_embed(inputs)
-                
-        x = self._pos_embeding(x, hw_shape, self.pos_embed[:, 1:, :])
+
+        # stole cls_tokens impl from Phil Wang, thanks
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = self._pos_embeding(x, hw_shape, self.pos_embed)
+
+        if not self.with_cls_token:
+            # Remove class token for transformer encoder input
+            x = x[:, 1:]
 
         outs = []
         for i, layer in enumerate(self.layers):
